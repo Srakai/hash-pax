@@ -1,6 +1,7 @@
 import asyncio
 from bleak import BleakClient, BleakScanner, BleakError
 from uuid import UUID
+import protocol # Import custom protocol module
 
 class PaxDeviceProber:
     # UUIDs for the Device Info Service and characteristics
@@ -25,7 +26,7 @@ class PaxDeviceProber:
 
     async def probe(self, device_address, callback):
         """
-        Starts probing the device for manufacturer and model information.
+        Start probing the device for manufacturer and model information.
         """
         try:
             async with BleakClient(device_address) as client:
@@ -33,35 +34,26 @@ class PaxDeviceProber:
                 self.states.append(state)
 
                 # Discover services
-                services = await client.get_services()
-                print(f"Discovered {len(services)} services")
-                print
+                await client.get_services()
 
                 # Try to find the Device Info service
-                info_service = next((s for s in services if s.uuid == self.DeviceInfoService), None)
-                if info_service is None:
+                info_service = client.services.get_service(self.DeviceInfoService)
+                if not info_service:
                     raise BleakError("Device info service not found")
 
                 print(f"Found Device Info Service: {info_service.uuid}")
 
                 # Discover characteristics of the DeviceInfoService
-                manufacturer_char = None
-                model_char = None
-                for characteristic in info_service.characteristics:
-                    if characteristic.uuid == self.ManufacturerCharacteristic:
-                        manufacturer_char = characteristic
-                    elif characteristic.uuid == self.ModelNumberCharacteristic:
-                        model_char = characteristic
+                manufacturer_char = info_service.get_characteristic(self.ManufacturerCharacteristic)
+                model_char = info_service.get_characteristic(self.ModelNumberCharacteristic)
 
                 # Check if the characteristics were found
-                if manufacturer_char is None or model_char is None:
+                if not manufacturer_char or not model_char:
                     raise BleakError("Manufacturer or Model Number characteristics not found")
 
                 # Read characteristics
-                if manufacturer_char:
-                    state.manufacturer = (await client.read_gatt_char(manufacturer_char)).decode('utf-8')
-                if model_char:
-                    state.model = (await client.read_gatt_char(model_char)).decode('utf-8')
+                state.manufacturer = (await client.read_gatt_char(manufacturer_char)).decode('utf-8')
+                state.model = (await client.read_gatt_char(model_char)).decode('utf-8')
 
                 # Probe device information
                 await self.perform_probe(client, state)
@@ -94,7 +86,7 @@ class PaxDeviceProber:
         """
         print(f"Device for {state.device}: {device}")
         self.states.remove(state)
-        state.callback(device)
+        state.callback(device, None)
 
     def handle_error(self, device, error, callback):
         """
@@ -103,7 +95,7 @@ class PaxDeviceProber:
         print(f"Probe error for {device}: {error}")
         callback(None, error)
 
-# Example usage:
+# Example usage
 async def main():
     # Scan for Pax devices
     devices = await BleakScanner.discover()
@@ -111,9 +103,12 @@ async def main():
 
     if pax_device:
         prober = PaxDeviceProber()
+        # Ensure the callback accepts both 'device' and 'err'
         await prober.probe(pax_device.address, lambda device, err: print(f"Probed device: {device}, Error: {err}"))
     else:
         print("No Pax device found")
 
+
 # Run the async main function
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
