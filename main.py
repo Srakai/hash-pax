@@ -134,11 +134,22 @@ async def probe_device():
     """
     Scan and connect to the Pax device.
     """
-    devices = await BleakScanner.discover()
-    pax_device = next((d for d in devices if "PAX" in d.name), None)
+    try:
+        devices = await BleakScanner.discover()
+    except Exception as e:
+        print(f"Error discovering devices: {e}")
+        return
+
+    if devices is None or len(devices) == 0:
+        print("No devices found.")
+        return
+
+    # Check if any device has 'PAX' in its name
+    pax_device = next((d for d in devices if d.name and "PAX" in d.name), None)
 
     if pax_device:
         print(f"Found Pax device: {pax_device.name}")
+        print(f"Address: {pax_device.address}")
         device = PaxDevice(protocol.DEVICE_KEY_KEY)
         await device.connect(pax_device.address)
         await device.disconnect()
