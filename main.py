@@ -99,12 +99,12 @@ class PaxDevice:
         Handler for receiving notifications from the device.
         After receiving a notification, it will trigger a read from the read characteristic.
         """
-        print(f"Notification received from {sender}. Triggering a read.")
+        #print(f"Notification received from {sender}. Triggering a read.")
         try:
             # Read from the Pax read characteristic
             encrypted_data = await self.client.read_gatt_char(self.read_characteristic)
             decrypted_data = protocol.decrypt_packet(encrypted_data, self.device_key)
-            print(f"Decrypted data: {decrypted_data.hex()}")
+            #print(f"Decrypted data: {decrypted_data.hex()}")
             await self.process_packet(decrypted_data)
         except Exception as e:
             print(f"Error processing notification: {e}")
