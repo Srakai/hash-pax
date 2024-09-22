@@ -1,59 +1,196 @@
 import asyncio
 import argparse
-from probe import PaxDeviceProber
-import protocol
 from bleak import BleakClient, BleakScanner
+import protocol
+
+class PaxDevice:
+    def __init__(self, device_key):
+        self.device_key = device_key
+        self.client = None
+        self.read_characteristic = None
+        self.write_characteristic = None
+        self.notify_characteristic = None
+        self.serial_number = None
+
+    async def connect(self, address):
+        """
+        Connects to the Pax device and initializes the necessary characteristics.
+        """
+        self.client = BleakClient(address)
+        await self.client.connect()
+        print(f"Connected to Pax device at {address}")
+        
+        # Discover services and characteristics
+        await self.discover_services()
+
+    async def discover_services(self):
+        """
+        Discover the necessary services and characteristics, including reading device info characteristics.
+        """
+        services = await self.client.get_services()
+
+        info_service = None
+        pax_service = None
+
+        # Find the Device Info Service and Pax Service
+        for service in services:
+            if service.uuid == str(protocol.DEVICE_INFO_SERVICE):
+                info_service = service
+            elif service.uuid == str(protocol.PAX_SERVICE):
+                pax_service = service
+
+        if not info_service or not pax_service:
+            raise Exception(f"Failed to find required services: {info_service}, {pax_service}")
+
+        # Discover characteristics for the device info service
+        await self.discover_device_info(info_service)
+        
+        # Discover characteristics for the Pax service
+        await self.discover_pax_service(pax_service)
+
+    async def discover_device_info(self, info_service):
+        """
+        Discover and read the Manufacturer, Model, Serial, HW, and SW version from the Device Info Service.
+        """
+        for char in info_service.characteristics:
+            if char.uuid == str(protocol.MANUFACTURER_CHARACTERISTIC):
+                manufacturer = await self.client.read_gatt_char(char)
+                print(f"Manufacturer: {manufacturer.decode()}")
+            elif char.uuid == str(protocol.MODEL_NUMBER_CHARACTERISTIC):
+                model_number = await self.client.read_gatt_char(char)
+                print(f"Model Number: {model_number.decode()}")
+            elif char.uuid == str(protocol.SERIAL_NUMBER_CHARACTERISTIC):
+                serial_number = await self.client.read_gatt_char(char)
+                self.serial_number = serial_number.decode()
+                print(f"Serial Number: {self.serial_number}")
+            elif char.uuid == str(protocol.HW_REV_CHARACTERISTIC):
+                hw_rev = await self.client.read_gatt_char(char)
+                print(f"Hardware Revision: {hw_rev.decode()}")
+            elif char.uuid == str(protocol.SW_REV_CHARACTERISTIC):
+                sw_rev = await self.client.read_gatt_char(char)
+                print(f"Software Revision: {sw_rev.decode()}")
+
+        # Derive the shared encryption key using the serial number
+        if self.serial_number:
+            self.device_key = protocol.derive_shared_key(self.serial_number)
+            print(f"Derived Device Key: {self.device_key.hex()}")
+
+    async def discover_pax_service(self, pax_service):
+        """
+        Discover the Pax read, write, and notify characteristics.
+        """
+        for char in pax_service.characteristics:
+            if char.uuid == str(protocol.PAX_READ_CHARACTERISTIC):
+                self.read_characteristic = char
+            elif char.uuid == str(protocol.PAX_WRITE_CHARACTERISTIC):
+                self.write_characteristic = char
+            elif char.uuid == str(protocol.PAX_NOTIFY_CHARACTERISTIC):
+                self.notify_characteristic = char
+
+        if not all([self.read_characteristic, self.write_characteristic, self.notify_characteristic]):
+            raise Exception("Failed to find required Pax service characteristics")
+
+        # Enable notifications for the notify characteristic
+        await self.client.start_notify(self.notify_characteristic, self.notification_handler)
+        print("Notifications enabled.")
+
+    async def notification_handler(self, sender, data):
+        """
+        Handler for receiving notifications from the device.
+        After receiving a notification, it will trigger a read from the read characteristic.
+        """
+        print(f"Notification received from {sender}. Triggering a read.")
+        try:
+            # Read from the Pax read characteristic
+            encrypted_data = await self.client.read_gatt_char(self.read_characteristic)
+            decrypted_data = protocol.decrypt_packet(encrypted_data, self.device_key)
+            print(f"Decrypted data: {decrypted_data.hex()}")
+            await self.process_packet(decrypted_data)
+        except Exception as e:
+            print(f"Error processing notification: {e}")
+
+    async def process_packet(self, decrypted_data):
+        """
+        Process received packets and handle the appropriate message type.
+        """
+        data = protocol.handle_incoming_message(decrypted_data)
+        print(f"Received: {data}")
+
+    async def send_message(self, message):
+        """
+        Encrypt and send a message to the device.
+        """
+        encrypted_message = protocol.encrypt_packet(message, self.device_key)
+        await self.client.write_gatt_char(self.write_characteristic, encrypted_message)
+
+    async def disconnect(self):
+        await self.client.disconnect()
+        print("Disconnected from the Pax device.")
+
+# Utility Functions for CLI Commands
 
 async def probe_device():
     """
-    Probes the Pax device and prints the result.
+    Scan and connect to the Pax device.
     """
     devices = await BleakScanner.discover()
-    pax_device = next((d for d in devices if d.name and "PAX" in d.name), None)
+    pax_device = next((d for d in devices if "PAX" in d.name), None)
 
     if pax_device:
-        prober = PaxDeviceProber()
-        await prober.probe(pax_device.address, lambda device, err: print(f"Probed device: {device}, Error: {err}"))
+        print(f"Found Pax device: {pax_device.name}")
+        device = PaxDevice(protocol.DEVICE_KEY_KEY)
+        await device.connect(pax_device.address)
+        await device.disconnect()
     else:
-        print("No Pax device found")
+        print("No Pax device found.")
 
-async def send_lock_command(device_address, lock):
+async def lock_device(address, lock):
     """
-    Sends a lock or unlock command to the Pax device.
+    Lock or unlock the Pax device.
     """
-    async with BleakClient(device_address) as client:
-        lock_msg = protocol.encode_lock_state(is_locked=lock)
-        await client.write_gatt_char(PaxDeviceProber.LockCharacteristic, lock_msg)
-        print(f"Sent {'lock' if lock else 'unlock'} command to device")
+    device = PaxDevice(protocol.DEVICE_KEY_KEY)
+    await device.connect(address)
+    
+    lock_message = protocol.encode_lock_message(lock)
+    await device.send_message(lock_message)
+    
+    print(f"Sent {'lock' if lock else 'unlock'} command.")
+    await device.disconnect()
 
-async def send_temperature_command(device_address, temperature):
+async def set_temperature(address, temperature):
     """
-    Sends a temperature set point command to the Pax device.
+    Set the temperature of the Pax device.
     """
-    async with BleakClient(device_address) as client:
-        temp_msg = protocol.encode_temperature_message(protocol.PaxMessageType.HeaterSetPoint, temperature)
-        await client.write_gatt_char(PaxDeviceProber.HeaterCharacteristic, temp_msg)
-        print(f"Set temperature to {temperature}°C")
+    device = PaxDevice(protocol.DEVICE_KEY_KEY)
+    await device.connect(address)
+    
+    temp_message = protocol.encode_temperature_message(temperature)
+    await device.send_message(temp_message)
+    
+    print(f"Set temperature to {temperature}°C.")
+    await device.disconnect()
 
-async def get_battery_status(device_address):
+async def receive_notifications(address):
     """
-    Requests the battery status from the Pax device.
+    Receive notifications from the Pax device.
     """
-    async with BleakClient(device_address) as client:
-        battery_msg = await client.read_gatt_char(PaxDeviceProber.BatteryCharacteristic)
-        battery_level = protocol.handle_message(battery_msg)
-        print(f"Battery Level: {battery_level}")
+    device = PaxDevice(protocol.DEVICE_KEY_KEY)
+    await device.connect(address)
+    
+    # Keep receiving notifications (no disconnect here)
+    print("Receiving notifications... Press Ctrl+C to exit.")
+    while True:
+        await asyncio.sleep(1)
+
+# CLI Implementation
 
 async def cli():
-    """
-    Main CLI function that handles user input.
-    """
     parser = argparse.ArgumentParser(description="Pax Device CLI")
-    
+
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
-    
+
     # Probe command
-    probe_parser = subparsers.add_parser("probe", help="Probe the Pax device")
+    subparsers.add_parser("probe", help="Probe the Pax device")
 
     # Lock/Unlock command
     lock_parser = subparsers.add_parser("lock", help="Lock or unlock the Pax device")
@@ -66,24 +203,20 @@ async def cli():
     temp_parser.add_argument("--temp", type=float, required=True, help="Temperature in °C")
     temp_parser.add_argument("--address", required=True, help="Bluetooth address of the Pax device")
 
-    # Get battery status command
-    battery_parser = subparsers.add_parser("battery", help="Get the battery level")
-    battery_parser.add_argument("--address", required=True, help="Bluetooth address of the Pax device")
+    # Receive notifications
+    notif_parser = subparsers.add_parser("notify", help="Receive notifications from the device")
+    notif_parser.add_argument("--address", required=True, help="Bluetooth address of the Pax device")
 
     args = parser.parse_args()
 
-    # Handle each command
     if args.command == "probe":
         await probe_device()
     elif args.command == "lock":
-        if args.lock:
-            await send_lock_command(args.address, lock=True)
-        elif args.unlock:
-            await send_lock_command(args.address, lock=False)
+        await lock_device(args.address, lock=args.lock)
     elif args.command == "set-temp":
-        await send_temperature_command(args.address, args.temp)
-    elif args.command == "battery":
-        await get_battery_status(args.address)
+        await set_temperature(args.address, args.temp)
+    elif args.command == "notify":
+        await receive_notifications(args.address)
     else:
         parser.print_help()
 

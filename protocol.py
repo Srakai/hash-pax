@@ -1,5 +1,10 @@
 import struct
 from enum import Enum
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+import binascii
+from uuid import UUID
+import base64
 
 # Message type enumeration
 class PaxMessageType(Enum):
@@ -28,39 +33,84 @@ class PaxMessageType(Enum):
     Haptics = 40
     StatusUpdate = 254
 
-# Utility functions for encoding and decoding
-def encode_bitmask(attributes):
+
+class DynamicMode(Enum):
+    Standard = 0
+    Boost = 1
+    Efficiency = 2
+    Stealth = 3
+    Flavor = 4
+
+
+DEVICE_KEY_KEY = '98hmw494dTCGKTvVfdMlQA=='
+IV_LENGTH = 16
+
+DEVICE_INFO_SERVICE = UUID("0000180A-0000-1000-8000-00805F9B34FB")
+MODEL_NUMBER_CHARACTERISTIC = UUID("00002A24-0000-1000-8000-00805F9B34FB")
+SERIAL_NUMBER_CHARACTERISTIC = UUID("00002A25-0000-1000-8000-00805F9B34FB")
+SW_REV_CHARACTERISTIC = UUID("00002A26-0000-1000-8000-00805F9B34FB")
+HW_REV_CHARACTERISTIC = UUID("00002A27-0000-1000-8000-00805F9B34FB")
+MANUFACTURER_CHARACTERISTIC = UUID("00002A29-0000-1000-8000-00805F9B34FB")
+
+PAX_SERVICE = UUID("8E320200-64D2-11E6-BDF4-0800200C9A66")
+PAX_READ_CHARACTERISTIC = UUID("8E320201-64D2-11E6-BDF4-0800200C9A66")
+PAX_WRITE_CHARACTERISTIC = UUID("8E320202-64D2-11E6-BDF4-0800200C9A66")
+PAX_NOTIFY_CHARACTERISTIC = UUID("8E320203-64D2-11E6-BDF4-0800200C9A66")
+
+def derive_shared_key(serial: str) -> bytes:
+    """
+    Derive the shared device key using the serial number, AES encryption with ECB mode.
+    The serial is repeated twice to form a 16-byte string.
+    """
+    serial_str = (serial * 2).encode('utf-8')
+    cipher = AES.new(base64.b64decode(DEVICE_KEY_KEY), AES.MODE_ECB)
+    return cipher.encrypt(serial_str)
+
+def decrypt_packet(packet: bytes, device_key) -> bytes:
+    """
+    Decrypts a packet using AES-OFB mode. The last 16 bytes are the IV.
+    """
+    if len(packet) <= IV_LENGTH:
+        raise ValueError("Invalid packet length")
+
+    data = packet[:-IV_LENGTH]
+    iv = packet[-IV_LENGTH:]
+
+    cipher = AES.new(device_key, AES.MODE_OFB, iv=iv)
+    decrypted = cipher.decrypt(data)
+    return decrypted
+
+def encrypt_packet(plaintext: bytes, device_key) -> bytes:
+    """
+    Encrypts a packet using AES-OFB mode with a random IV.
+    """
+    iv = get_random_bytes(IV_LENGTH)
+    cipher = AES.new(device_key, AES.MODE_OFB, iv=iv)
+    encrypted = cipher.encrypt(plaintext)
+    return encrypted + iv
+
+def encode_temperature_message(temperature: float) -> bytes:
+    """
+    Encodes a temperature message for the Pax device.
+    """
+    temp_encoded = int(temperature * 10)
+    return struct.pack('<BH', PaxMessageType.HeaterSetPoint.value, temp_encoded)
+
+def encode_lock_message(lock: bool) -> bytes:
+    """
+    Encodes a lock/unlock message for the Pax device.
+    """
+    return struct.pack('BB', PaxMessageType.LockStatus.value, 1 if lock else 0)
+
+def encode_status_update_message(attributes: set) -> bytes:
+    """
+    Encodes a status update message with a bitmask for requested attributes.
+    """
     bitmask = 0
     for attr in attributes:
         if attr.value <= 63:
             bitmask |= (1 << attr.value)
-    return struct.pack('>BQ', PaxMessageType.StatusUpdate.value, bitmask)
-
-def decode_bitmask(data):
-    if len(data) < 9:
-        raise ValueError("Data too small for StatusUpdateMessage")
-    bitmask = struct.unpack('>Q', data[1:9])[0]
-    return {PaxMessageType(attr) for attr in range(64) if (bitmask & (1 << attr))}
-
-def encode_temperature_message(message_type, temperature):
-    temp_encoded = int(temperature * 10)
-    return struct.pack('>BH', message_type.value, temp_encoded)
-
-def decode_temperature_message(data):
-    if len(data) < 3:
-        raise ValueError("Data too small for TemperatureMessage")
-    temp_encoded = struct.unpack('>H', data[1:3])[0]
-    return temp_encoded / 10.0
-
-# Encoding and Decoding Functions for Specific Messages
-def encode_lock_state(is_locked):
-    return struct.pack('BB', PaxMessageType.LockStatus.value, 1 if is_locked else 0)
-
-def decode_lock_state(data):
-    if len(data) < 2:
-        raise ValueError("Data too small for LockStateMessage")
-    return data[1] != 0
-
+    return struct.pack('<BQ', PaxMessageType.StatusUpdate.value, bitmask)
 def encode_dynamic_mode(mode):
     return struct.pack('BB', PaxMessageType.DynamicMode.value, mode.value)
 
@@ -71,40 +121,80 @@ def decode_dynamic_mode(data):
     return DynamicMode(mode)
 
 # Mode Enum for Dynamic Mode
-class DynamicMode(Enum):
-    Standard = 0
-    Boost = 1
-    Efficiency = 2
-    Stealth = 3
-    Flavor = 4
+def handle_incoming_message(data: bytes) -> str:
+    """
+    Handles and interprets incoming messages based on the Pax protocol.
+    """
+    try:
+        message_type = PaxMessageType(data[0])
+    except ValueError:
+        return f"Unknown message type: {data[0]:02x}"
 
-# Message Handling
-def handle_message(data):
-    message_type = PaxMessageType(data[0])
-    
     if message_type == PaxMessageType.Battery:
-        return f"Battery Level: {data[1]}%"
+        battery_level = data[1]
+        return f"Battery Level: {battery_level}%"
+    
+    elif message_type == PaxMessageType.ChargeStatus:
+        charging = data[1] != 0
+        return f"Charging: {'Yes' if charging else 'No'}"
     
     elif message_type == PaxMessageType.LockStatus:
-        is_locked = decode_lock_state(data)
-        return f"Device is {'Locked' if is_locked else 'Unlocked'}"
+        lock_state = data[1] != 0
+        return f"Device is {'Locked' if lock_state else 'Unlocked'}"
     
-    elif message_type == PaxMessageType.HeaterSetPoint or message_type == PaxMessageType.ActualTemp:
-        temperature = decode_temperature_message(data)
-        return f"Temperature: {temperature}°C"
-
-    elif message_type == PaxMessageType.DynamicMode:
-        mode = decode_dynamic_mode(data)
-        return f"Dynamic Mode: {mode.name}"
-
+    elif message_type == PaxMessageType.HeaterSetPoint:
+        temperature = struct.unpack('<H', data[1:3])[0] / 10.0
+        return f"Temperature Set Point: {temperature}°C"
+    
+    elif message_type == PaxMessageType.ActualTemp:
+        temperature = struct.unpack('<H', data[1:3])[0] / 10.0
+        return f"Actual Temperature: {temperature}°C"
+    
+    elif message_type == PaxMessageType.CurrentTargetTemp:
+        temperature = struct.unpack('<H', data[1:3])[0] / 10.0
+        return f"Current Target Temperature: {temperature}°C"
+    
     elif message_type == PaxMessageType.SupportedAttributes:
-        supported_attrs = decode_bitmask(data)
+        bitmask = struct.unpack('<Q', data[1:9])[0]
+        supported_attrs = {PaxMessageType(attr) for attr in range(64) if bitmask & (1 << attr)}
         return f"Supported Attributes: {', '.join([attr.name for attr in supported_attrs])}"
+    
+    elif message_type == PaxMessageType.StatusUpdate:
+        bitmask = struct.unpack('<Q', data[1:9])[0]
+        updated_attrs = {PaxMessageType(attr) for attr in range(64) if bitmask & (1 << attr)}
+        return f"Updated Attributes: {', '.join([attr.name for attr in updated_attrs])}"
+    
+    elif message_type == PaxMessageType.DynamicMode:
+        mode = data[1]
+        return f"Dynamic Mode: {mode}"
+    
+    elif message_type == PaxMessageType.ColorTheme:
+        theme = data[1]
+        return f"Color Theme: {theme}"
+    
+    elif message_type == PaxMessageType.Brightness:
+        brightness = data[1]
+        return f"Brightness: {brightness}"
+    
+    elif message_type == PaxMessageType.HapticMode:
+        haptic_mode = data[1]
+        return f"Haptic Mode: {haptic_mode}"
+    
+    elif message_type == PaxMessageType.UiMode:
+        ui_mode = data[1]
+        return f"UI Mode: {ui_mode}"
+    
+    elif message_type == PaxMessageType.LowSoCMode:
+        low_soc_mode = data[1]
+        return f"Low SoC Mode: {low_soc_mode}"
+    
+    elif message_type == PaxMessageType.HeatingState:
+        heating_state = data[1]
+        return f"Heating State: {heating_state}"
 
-    elif message_type == PaxMessageType.ChargeStatus:
-        is_charging = (data[1] & 0x01) != 0
-        charge_complete = (data[1] & 0x02) != 0
-        return f"Charging: {is_charging}, Charge Complete: {charge_complete}"
+    return f"Unknown message type: {message_type}"
 
-    else:
-        return f"Unhandled message type: {message_type}"
+
+# Helper functions
+def to_hex(data: bytes) -> str:
+    return binascii.hexlify(data).decode('utf-8')
