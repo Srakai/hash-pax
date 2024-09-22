@@ -6,11 +6,11 @@ authors = ["Filip Gara <filip.gara@artnovation.eu>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "3.11"
+python = "3.11.5"
 bleak = "^0.22.2"
+pycryptodome = "^3.20.0"
 
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
-`
