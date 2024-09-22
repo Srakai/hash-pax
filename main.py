@@ -203,7 +203,7 @@ async def receive_notifications(address):
 # CLI Implementation
 
 async def cli():
-    parser = argparse.ArgumentParser(description="Pax Device CLI")
+    parser = argparse.ArgumentParser(description="Hash Pax CLI")
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 

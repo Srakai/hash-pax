@@ -1,5 +1,5 @@
 ## 🚀 Hash Pax
-Hashish — the Pax controller you didn’t know you needed. While the Pax app ghosted the App Store, we’ve stepped in with over-engineered Bluetooth magic. Control your vaporizer like a pro, straight from the terminal. Who needs an app when you’ve got Python?
+Hash Pax — the Pax controller you didn’t know you needed. While the Pax app ghosted the App Store, we’ve stepped in with over-engineered Bluetooth magic. Control your vaporizer like a pro, straight from the terminal. Who needs an app when you’ve got Python?
 
 ### 🔥 Features
 Lock/Unlock: Because privacy matters, even with vapes.
