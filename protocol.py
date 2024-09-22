@@ -82,19 +82,30 @@ def decrypt_packet(packet: bytes, device_key) -> bytes:
 
 def encrypt_packet(plaintext: bytes, device_key) -> bytes:
     """
-    Encrypts a packet using AES-OFB mode with a random IV.
+    Encrypts a packet using AES-OFB mode with a random IV and pads to 64 bytes.
     """
     iv = get_random_bytes(IV_LENGTH)
+    
+    # Pad the plaintext to 64 bytes
+    if len(plaintext) < 16:
+        plaintext = plaintext.ljust(16, b'\x00')
+    
     cipher = AES.new(device_key, AES.MODE_OFB, iv=iv)
     encrypted = cipher.encrypt(plaintext)
     return encrypted + iv
 
+
 def encode_temperature_message(temperature: float) -> bytes:
     """
-    Encodes a temperature message for the Pax device.
+    Encodes a temperature message for the Pax device, pads it 
+    to 64 bytes.
     """
     temp_encoded = int(temperature * 10)
-    return struct.pack('<BH', PaxMessageType.HeaterSetPoint.value, temp_encoded)
+    message = struct.pack('<BH', PaxMessageType.HeaterSetPoint.value, temp_encoded)
+    msg = pad_to_16_bytes(message)
+    print(f"Encoded message: {to_hex(msg)}")
+    return msg
+
 
 def encode_lock_message(lock: bool) -> bytes:
     """
@@ -104,21 +115,30 @@ def encode_lock_message(lock: bool) -> bytes:
 
 def encode_status_update_message(attributes: set) -> bytes:
     """
-    Encodes a status update message with a bitmask for requested attributes.
+    Encodes a status update message with a bitmask for requested attributes, pads it to 64 bytes.
     """
     bitmask = 0
     for attr in attributes:
         if attr.value <= 63:
             bitmask |= (1 << attr.value)
-    return struct.pack('<BQ', PaxMessageType.StatusUpdate.value, bitmask)
-def encode_dynamic_mode(mode):
-    return struct.pack('BB', PaxMessageType.DynamicMode.value, mode.value)
+    message = struct.pack('<BQ', PaxMessageType.StatusUpdate.value, bitmask)
+    msg = pad_to_16_bytes(message)
+    print(f"Encoded message: {to_hex(msg)}")
+    return msg
+
 
 def decode_dynamic_mode(data):
     if len(data) < 2:
         raise ValueError("Data too small for DynamicModeMessage")
     mode = data[1]
     return DynamicMode(mode)
+
+def encode_dynamic_mode(mode: DynamicMode) -> bytes:
+    """
+    Encodes a dynamic mode message, pads it to 64 bytes.
+    """
+    message = struct.pack('BB', PaxMessageType.DynamicMode.value, mode.value)
+    return pad_to_16_bytes(message)
 
 # Mode Enum for Dynamic Mode
 def handle_incoming_message(data: bytes) -> str:
@@ -198,3 +218,9 @@ def handle_incoming_message(data: bytes) -> str:
 # Helper functions
 def to_hex(data: bytes) -> str:
     return binascii.hexlify(data).decode('utf-8')
+
+def pad_to_16_bytes(data: bytes) -> bytes:
+    """
+    Pads the given data to 64 bytes using null bytes.
+    """
+    return data.ljust(16, b'\x00')

@@ -121,7 +121,8 @@ class PaxDevice:
         Encrypt and send a message to the device.
         """
         encrypted_message = protocol.encrypt_packet(message, self.device_key)
-        await self.client.write_gatt_char(self.write_characteristic, encrypted_message)
+        print(f"Sending message: {encrypted_message.hex()}")
+        await self.client.write_gatt_char(self.write_characteristic, encrypted_message, response=False)
 
     async def disconnect(self):
         await self.client.disconnect()
@@ -166,9 +167,15 @@ async def set_temperature(address, temperature):
     
     temp_message = protocol.encode_temperature_message(temperature)
     await device.send_message(temp_message)
+
+    status_message = protocol.encode_status_update_message({protocol.PaxMessageType.HeaterSetPoint})
+    await device.send_message(status_message)
     
     print(f"Set temperature to {temperature}°C.")
-    await device.disconnect()
+    
+    # Keep receiving notifications
+    while True:
+        await asyncio.sleep(1)
 
 async def receive_notifications(address):
     """
